@@ -1,11 +1,241 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>Soft Physics Tetris</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.18.0/matter.min.js"></script>
+    <style>
+        canvas {
+            border: 2px solid #333;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        #next-piece {
+            margin-top: 20px;
+        }
+    </style>
 </head>
 <body>
-    <iframe src="http://devoase.hopto.org:25565/"></iframe>
+    <div id="ui">
+        <div>Score: <span id="score">0</span></div>
+        <div id="next-piece">Next Piece:</div>
+        <canvas id="preview" width="100" height="100"></canvas>
+        <div id="game-over" style="display: none; color: red;">GAME OVER!</div>
+    </div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const Engine = Matter.Engine,
+            Render = Matter.Render,
+            World = Matter.World,
+            Bodies = Matter.Bodies,
+            Constraint = Matter.Constraint,
+            Composites = Matter.Composites;
+
+        const engine = Engine.create();
+        const render = Render.create({
+            element: document.body,
+            engine: engine,
+            canvas: document.getElementById('canvas'),
+            options: {
+                width: 400,
+                height: 600,
+                wireframes: false,
+                background: '#1a1a1a'
+            }
+        });
+
+        // Tetris Constants
+        const TETROMINOES = {
+            I: [[1,1,1,1]],
+            O: [[2,2],[2,2]],
+            T: [[0,3,0],[3,3,3]],
+            L: [[4,0],[4,0],[4,4]],
+            J: [[0,5],[0,5],[5,5]],
+            S: [[0,6,6],[6,6,0]],
+            Z: [[7,7,0],[0,7,7]]
+        };
+
+        const COLORS = [
+            '#FF0D72', '#0DC2FF', '#0DFF72', 
+            '#F538FF', '#FF8E0D', '#FFE138', '#3877FF'
+        ];
+
+        // Game State
+        let score = 0;
+        let currentPiece = null;
+        let nextPiece = null;
+        let gameOver = false;
+
+        // Boundaries
+        World.add(engine.world, [
+            Bodies.rectangle(200, 610, 410, 60, { isStatic: true }),
+            Bodies.rectangle(200, -10, 410, 60, { isStatic: true }),
+            Bodies.rectangle(-10, 300, 60, 610, { isStatic: true }),
+            Bodies.rectangle(410, 300, 60, 610, { isStatic: true })
+        ]);
+
+        // Create soft tetromino
+        function createTetromino(type, x, y) {
+            const template = TETROMINOES[type];
+            const group = Matter.Body.nextGroupId();
+            const blocks = [];
+            
+            template.forEach((row, i) => {
+                row.forEach((cell, j) => {
+                    if (cell) {
+                        const block = Bodies.rectangle(
+                            x + j * 20,
+                            y + i * 20,
+                            18, 18,
+                            {
+                                render: { fillStyle: COLORS[cell-1] },
+                                collisionFilter: { group: group }
+                            }
+                        );
+                        blocks.push(block);
+                    }
+                });
+            });
+
+            // Add constraints
+            for (let i = 0; i < blocks.length; i++) {
+                for (let j = i + 1; j < blocks.length; j++) {
+                    World.add(engine.world, Constraint.create({
+                        bodyA: blocks[i],
+                        bodyB: blocks[j],
+                        stiffness: 0.8,
+                        length: 20,
+                        render: { visible: false }
+                    }));
+                }
+            }
+
+            return blocks;
+        }
+
+        // Rotation mechanics
+        function rotatePiece() {
+            if (!currentPiece || gameOver) return;
+            
+            const center = currentPiece.reduce((acc, body) => {
+                acc.x += body.position.x;
+                acc.y += body.position.y;
+                return acc;
+            }, {x: 0, y: 0});
+            
+            center.x /= currentPiece.length;
+            center.y /= currentPiece.length;
+
+            currentPiece.forEach(body => {
+                const dx = body.position.x - center.x;
+                const dy = body.position.y - center.y;
+                Matter.Body.setPosition(body, {
+                    x: center.x - dy,
+                    y: center.y + dx
+                });
+            });
+        }
+
+        // Line clearing detection
+        function checkLines() {
+            const yLevels = new Array(30).fill(0).map((_, i) => 580 - i * 20);
+            
+            yLevels.forEach(y => {
+                const bodies = engine.world.bodies.filter(body => 
+                    body.position.y > y - 10 && body.position.y < y + 10
+                );
+                
+                if (bodies.length >= 18) {
+                    bodies.forEach(body => World.remove(engine.world, body));
+                    score += 100;
+                    document.getElementById('score').textContent = score;
+                }
+            });
+        }
+
+        // Game controls
+        document.addEventListener('keydown', e => {
+            if (gameOver) return;
+
+            switch(e.key) {
+                case 'ArrowLeft':
+                    currentPiece.forEach(b => Matter.Body.translate(b, { x: -10, y: 0 }));
+                    break;
+                case 'ArrowRight':
+                    currentPiece.forEach(b => Matter.Body.translate(b, { x: 10, y: 0 }));
+                    break;
+                case 'ArrowDown':
+                    currentPiece.forEach(b => Matter.Body.translate(b, { x: 0, y: 5 }));
+                    break;
+                case 'ArrowUp':
+                    rotatePiece();
+                    break;
+            }
+        });
+
+        // Game loop
+        function spawnPiece() {
+            if (gameOver) return;
+
+            const pieces = Object.keys(TETROMINOES);
+            const type = nextPiece || pieces[Math.floor(Math.random() * pieces.length)];
+            
+            currentPiece = createTetromino(type, 200, 50);
+            World.add(engine.world, currentPiece);
+            
+            // Set next piece
+            nextPiece = pieces[Math.floor(Math.random() * pieces.length)];
+            drawPreview();
+        }
+
+        // Piece preview system
+        function drawPreview() {
+            const canvas = document.getElementById('preview');
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, 100, 100);
+            
+            const template = TETROMINOES[nextPiece];
+            template.forEach((row, i) => {
+                row.forEach((cell, j) => {
+                    if (cell) {
+                        ctx.fillStyle = COLORS[cell-1];
+                        ctx.fillRect(j*20 + 10, i*20 + 10, 18, 18);
+                    }
+                });
+            });
+        }
+
+        // Game over detection
+        function checkGameOver() {
+            return engine.world.bodies.some(body => 
+                body.position.y < 100 && body.position.y > 50
+            );
+        }
+
+        // Main game cycle
+        setInterval(() => {
+            if (gameOver) return;
+            
+            if (!currentPiece || currentPiece.every(b => b.position.y > 550)) {
+                checkLines();
+                if (checkGameOver()) {
+                    document.getElementById('game-over').style.display = 'block';
+                    gameOver = true;
+                    return;
+                }
+                spawnPiece();
+            }
+        }, 1000);
+
+        // Initialize game
+        spawnPiece();
+        Engine.run(engine);
+        Render.run(render);
+    </script>
 </body>
 </html>
